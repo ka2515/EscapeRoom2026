@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>慢動作測試：修正拖拽衝突</title>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+    <style>
+        body { margin: 0; background-color: #1a1a1a; overflow: hidden; touch-action: none; }
+        canvas { display: block; margin: 0 auto; }
+    </style>
+</head>
+<body>
+<script>
+const config = {
+    type: Phaser.AUTO,
+    width: 1024,
+    height: 768,
+    scene: { preload: preload, create: create }
+};
+
+const game = new Phaser.Game(config);
+
+function preload() {
+    this.load.image('bg_map', 'map.png'); 
+    this.load.image('lion3', 'lion3.png'); 
+}
+
+function create() {
+    const self = this;
+    const map = this.add.image(512, 384, 'bg_map');
+    const scale = Math.min(config.width / map.width, config.height / map.height);
+    map.setScale(scale).setInteractive(); // 讓地圖也可以互動
+
+    // --- 1. 目標座標 (瓊林) ---
+    const targetX = 615;
+    const targetY = 413;
+    this.add.circle(targetX, targetY, 45, 0xffff00, 0.2).setStrokeStyle(2, 0xffffff);
+
+    // --- 2. 建立風獅爺拼圖 (修正後的拖拽邏輯) ---
+    // 建立一個 Container 把圖片和遮罩包在一起，比較好移動
+    const lionContainer = this.add.container(150, 384);
+    const lionImg = this.add.image(0, 0, 'lion3').setDisplaySize(100, 100);
+    
+    // 建立圓形遮罩
+    const shape = this.make.graphics();
+    shape.fillStyle(0xffffff);
+    shape.fillCircle(0, 0, 50);
+    const mask = shape.createGeometryMask();
+    lionImg.setMask(mask);
+
+    lionContainer.add(lionImg);
+
+    // 讓 Container 可以被拖動
+    lionImg.setInteractive({ draggable: true, useHandCursor: true });
+    
+    // 註冊拖拽事件
+    this.input.setDraggable(lionImg);
+
+    this.input.on('drag', function (pointer, gameObject, dragX, dragY) {
+        // 移動的是整個 Container，而物件座標是相對於 Container 的
+        lionContainer.x = dragX;
+        lionContainer.y = dragY;
+        // 遮罩圖形也要跟著 Container 跑
+        shape.x = dragX;
+        shape.y = dragY;
+    });
+
+    this.input.on('dragend', function (pointer, gameObject) {
+        const dist = Phaser.Math.Distance.Between(lionContainer.x, lionContainer.y, targetX, targetY);
+        if (dist < 50) {
+            lionContainer.setPosition(targetX, targetY);
+            shape.setPosition(targetX, targetY);
+            lionImg.disableInteractive();
+            self.add.text(512, 100, '瓊林對位成功！', { fontSize: '40px', color: '#f1c40f' }).setOrigin(0.5);
+        }
+    });
+
+    // --- 3. 聰明的座標偵測器 ---
+    const debugText = this.add.text(10, 10, '現在應該可以拖動了', { color: '#00ff00', backgroundColor: '#000' });
+    
+    this.input.on('pointerdown', (pointer, gameObjects) => {
+        // 如果點擊的地方沒有任何「遊戲物件」(代表點在地圖空處)
+        if (gameObjects.length === 0) {
+            debugText.setText(`座標 -> X: ${Math.floor(pointer.x)}, Y: ${Math.floor(pointer.y)}`);
+            this.add.circle(pointer.x, pointer.y, 5, 0xff0000);
+        }
+    });
+}
+</script>
+</body>
+</html>

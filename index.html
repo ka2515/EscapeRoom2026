@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>金門風獅爺拼圖 V1 - 座標補全</title>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+    <style>
+        body { margin: 0; background-color: #000; overflow: hidden; touch-action: none; }
+        canvas { display: block; margin: 0 auto; }
+    </style>
+</head>
+<body>
+<script>
+const config = {
+    type: Phaser.AUTO,
+    width: 1024,
+    height: 768,
+    scene: { preload: preload, create: create }
+};
+
+const game = new Phaser.Game(config);
+
+// --- 這裡是你之後要微調的「黃金數字區」 ---
+const lionsData = [
+    { id: 'lion1', name: '后水頭', tx: 735, ty: 315 }, // 金沙
+    { id: 'lion2', name: '安岐',   tx: 415, ty: 355 }, // 金寧
+    { id: 'lion3', name: '瓊林',   tx: 615, ty: 413 }, // 金湖 (已確認)
+    { id: 'lion4', name: '官路邊', tx: 360, ty: 560 }, // 金城
+    { id: 'lion5', name: '西方村', tx: 155, ty: 435 }  // 烈嶼
+];
+
+function preload() {
+    this.load.image('bg_map', 'map.png');
+    // 批次載入圖片 (請確保你的資料夾有 lion1.png ~ lion5.png)
+    lionsData.forEach(lion => {
+        this.load.image(lion.id, `${lion.id}.png`);
+    });
+}
+
+function create() {
+    const self = this;
+    let currentMode = 'b'; 
+
+    // --- 1. 背景處理 ---
+    const map = this.add.image(512, 384, 'bg_map');
+    const scale = Math.min(config.width / map.width, config.height / map.height);
+    map.setScale(scale).setAlpha(0.6); // 降低背景透明度
+
+    // --- 2. 循環建立拼圖與目標 ---
+    lionsData.forEach((data, index) => {
+        const startX = 80;
+        const startY = 120 + (index * 130); // 讓五尊拼圖在左側排隊
+        const targetPieceSize = 100;
+
+        // A. 建立目標「洞」
+        this.add.circle(data.tx, data.ty, 45, 0xffff00, 0.2).setStrokeStyle(2, 0xffffff);
+        this.add.text(data.tx, data.ty + 55, data.name, { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
+
+        // B. 建立風獅爺圖片
+        const lionImg = this.add.image(startX, startY, data.id);
+        
+        // 比例修正邏輯
+        const aspectRatio = lionImg.width / lionImg.height;
+        if (lionImg.width > lionImg.height) {
+            lionImg.setDisplaySize(targetPieceSize * aspectRatio, targetPieceSize);
+        } else {
+            lionImg.setDisplaySize(targetPieceSize, targetPieceSize / aspectRatio);
+        }
+
+        // C. 建立專屬圓形遮罩
+        const shape = this.make.graphics();
+        shape.fillStyle(0xffffff);
+        shape.fillCircle(0, 0, targetPieceSize / 2);
+        shape.setPosition(startX, startY);
+        lionImg.setMask(shape.createGeometryMask());
+
+        // D. 綁定數據到物件，方便拖拽時抓取
+        lionImg.setData('shape', shape);
+        lionImg.setData('target', { x: data.tx, y: data.ty });
+        lionImg.setData('home', { x: startX, y: startY });
+
+        // E. 啟動互動
+        lionImg.setInteractive({ draggable: true, useHandCursor: true });
+        this.input.setDraggable(lionImg);
+    });
+
+    // --- 3. UI 狀態與模式切換 ---
+    const statusText = this.add.text(10, 10, '模式：[B] 遊戲拖拽', { 
+        fontSize: '18px', color: '#00ff00', backgroundColor: '#000000aa', padding: {x:10, y:5}
+    });
+    const debugCoord = this.add.text(10, 45, '', { fontSize: '16px', color: '#ff0000' });
+
+    this.input.keyboard.on('keydown-A', () => {
+        currentMode = 'a';
+        statusText.setText('模式：[A] 座標偵測').setColor('#ff0000');
+    });
+    this.input.keyboard.on('keydown-B', () => {
+        currentMode = 'b';
+        statusText.setText('模式：[B] 遊戲拖拽').setColor('#00ff00');
+    });
+
+    // --- 4. 核心拖拽邏輯 ---
+    this.input.on('drag', (pointer, gameObject, dragX, dragY) => {
+        if (currentMode === 'b') {
+            gameObject.setPosition(dragX, dragY);
+            gameObject.getData('shape').setPosition(dragX, dragY);
+        }
+    });
+
+    this.input.on('dragend', (pointer, gameObject) => {
+        if (currentMode === 'b') {
+            const target = gameObject.getData('target');
+            const home = gameObject.getData('home');
+            const dist = Phaser.Math.Distance.Between(gameObject.x, gameObject.y, target.x, target.y);
+
+            if (dist < 50) {
+                // 吸附
+                gameObject.setPosition(target.x, target.y);
+                gameObject.getData('shape').setPosition(target.x, target.y);
+                gameObject.disableInteractive();
+                // 暫不處理對錯，僅簡單變色示意
+                gameObject.setTint(0xffffff); 
+            } else {
+                // 彈回
+                self.tweens.add({
+                    targets: [gameObject, gameObject.getData('shape')],
+                    x: home.x, y: home.y,
+                    duration: 400, ease: 'Back.easeOut'
+                });
+            }
+        }
+    });
+
+    // --- 5. 紅點偵測 (A 模式) ---
+    this.input.on('pointerdown', (pointer, gameObjects) => {
+        if (currentMode === 'a' && gameObjects.length === 0) {
+            debugCoord.setText(`座標 -> X: ${Math.floor(pointer.x)}, Y: ${Math.floor(pointer.y)}`);
+            this.add.circle(pointer.x, pointer.y, 5, 0xff0000);
+        }
+    });
+}
+</script>
+</body>
+</html>
