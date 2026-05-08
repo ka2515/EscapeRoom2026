@@ -2,8 +2,8 @@
 <html lang="zh-Hant">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>金門風獅爺拼圖 V1 - 座標補全</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>金門風獅爺尋寶 V3.2 - 穩定整理版</title>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
     <style>
         body { margin: 0; background-color: #000; overflow: hidden; touch-action: none; }
@@ -12,133 +12,173 @@
 </head>
 <body>
 <script>
-const config = {
-    type: Phaser.AUTO,
+
+// --- 1. 黃金設定區 ---
+const GAME_SETTINGS = {
     width: 1024,
     height: 768,
+    mag: { x: 940, y: 650, size: 200, detectDist: 110, zoomScale: 2.0 },
+    bag: { x: 110, y: 660, size: 120, overlayAlpha: 0.7 },
+    piece: { size: 100, holeRadius: 45, snapDist: 60, zoomTint: 0x333333 },
+    colors: { holeFill: 0xffff00, holeLine: 0xffffff, textBg: '#ffffffcc' }
+};
+
+const lionsData = [
+    { id: 'lion1', name: '后水頭', tx: 735, ty: 315, shapeType: 'hexagon', poem: '青天高高，\n風獅鎮守。' },
+    { id: 'lion2', name: '安岐',   tx: 415, ty: 355, shapeType: 'rhombus', poem: '石獅昂首，\n護佑安岐。' },
+    { id: 'lion3', name: '瓊林',   tx: 615, ty: 413, shapeType: 'circle',  poem: '瓊林古廟，\n風獅守護。' },
+    { id: 'lion4', name: '官路邊', tx: 360, ty: 560, shapeType: 'shield',  poem: '官路蜿蜒，\n雄獅守望。' },
+    { id: 'lion5', name: '西方村', tx: 155, ty: 435, shapeType: 'cloud',   poem: '烈嶼西方，\n風獅現身。' }
+];
+
+const config = {
+    type: Phaser.AUTO,
+    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: 1024, height: 768 },
     scene: { preload: preload, create: create }
 };
 
 const game = new Phaser.Game(config);
 
-// --- 這裡是你之後要微調的「黃金數字區」 ---
-const lionsData = [
-    { id: 'lion1', name: '后水頭', tx: 735, ty: 315 }, // 金沙
-    { id: 'lion2', name: '安岐',   tx: 415, ty: 355 }, // 金寧
-    { id: 'lion3', name: '瓊林',   tx: 615, ty: 413 }, // 金湖 (已確認)
-    { id: 'lion4', name: '官路邊', tx: 360, ty: 560 }, // 金城
-    { id: 'lion5', name: '西方村', tx: 155, ty: 435 }  // 烈嶼
-];
-
 function preload() {
     this.load.image('bg_map', 'map.png');
-    // 批次載入圖片 (請確保你的資料夾有 lion1.png ~ lion5.png)
-    lionsData.forEach(lion => {
-        this.load.image(lion.id, `${lion.id}.png`);
-    });
+    this.load.image('ui_magnifier', 'magnifier.png');
+    this.load.image('ui_bag', 'bag.png');
+    lionsData.forEach(lion => this.load.image(lion.id, `${lion.id}.png`));
 }
 
 function create() {
     const self = this;
-    let currentMode = 'b'; 
+    const { mag, bag, piece, colors } = GAME_SETTINGS;
+    const allPuzzles = [];
 
-    // --- 1. 背景處理 ---
+    // --- 2. 背景與 UI 佈置 ---
     const map = this.add.image(512, 384, 'bg_map');
-    const scale = Math.min(config.width / map.width, config.height / map.height);
-    map.setScale(scale).setAlpha(0.6); // 降低背景透明度
+    map.setScale(Math.min(1024 / map.width, 768 / map.height)).setAlpha(0.6);
 
-    // --- 2. 循環建立拼圖與目標 ---
+    // 建立黑色遮罩 (層級 80)
+    const bagOverlay = this.add.graphics().fillStyle(0x000000, bag.overlayAlpha).fillRect(0, 0, 1024, 768).setVisible(false).setDepth(80);
+
+    // 建立放大鏡
+    this.add.image(mag.x, mag.y, 'ui_magnifier').setDisplaySize(mag.size, mag.size).setAlpha(0.9);
+    this.add.text(mag.x, mag.y + 75, '檢視線索', { fontSize: '16px', color: '#fff', backgroundColor: '#00000088' }).setOrigin(0.5);
+
+    // 建立包包按鈕 (層級 1000，確保永遠點得到)
+    const bagBtn = this.add.image(bag.x, bag.y, 'ui_bag').setInteractive({ useHandCursor: true }).setDepth(1000);
+    bagBtn.setScale(bag.size / bagBtn.width);
+    this.add.text(bag.x, bag.y + 65, '我的背包', { fontSize: '18px', color: '#fff', backgroundColor: '#00000088' }).setOrigin(0.5).setDepth(1000);
+
+    // --- 3. 一次性建立所有風獅爺 (地圖洞 + 拼圖) ---
     lionsData.forEach((data, index) => {
-        const startX = 80;
-        const startY = 120 + (index * 130); // 讓五尊拼圖在左側排隊
-        const targetPieceSize = 100;
+        // A. 地圖上的洞
+        const targetHole = this.add.graphics().setPosition(data.tx, data.ty);
+        targetHole.fillStyle(colors.holeFill, 0.2).lineStyle(2, colors.holeLine, 0.8);
+        drawSpecificShape(targetHole, data.shapeType, piece.holeRadius);
+        this.add.text(data.tx, data.ty + 65, data.name, { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
 
-        // A. 建立目標「洞」
-        this.add.circle(data.tx, data.ty, 45, 0xffff00, 0.2).setStrokeStyle(2, 0xffffff);
-        this.add.text(data.tx, data.ty + 55, data.name, { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
+        // B. 背包內的初始位置
+        const invX = 300 + (index % 3) * 200;
+        const invY = 300 + Math.floor(index / 3) * 200;
 
-        // B. 建立風獅爺圖片
-        const lionImg = this.add.image(startX, startY, data.id);
+        // C. 建立容器與內容物
+        const lionImg = this.add.image(0, 0, data.id);
+        const ratio = lionImg.width / lionImg.height;
+        lionImg.setDisplaySize(piece.size * 1.4 * (ratio > 1 ? ratio : 1), piece.size * 1.4 * (ratio > 1 ? 1 : 1/ratio));
+
+        const poemText = this.add.text(0, 0, data.poem, {
+            fontSize: '18px', color: '#000', align: 'center', backgroundColor: colors.textBg,
+            padding: { x: 5, y: 5 }, wordWrap: { width: piece.size + 20 }
+        }).setOrigin(0.5).setAlpha(0);
+
+        const container = this.add.container(invX, invY).setDepth(100).setVisible(false);
+        container.add([lionImg, poemText]);
+
+        // D. 建立遮罩
+        const maskShape = this.make.graphics().fillStyle(0xffffff);
+        drawSpecificShape(maskShape, data.shapeType, piece.size / 2);
+        maskShape.setPosition(invX, invY);
+        container.setMask(maskShape.createGeometryMask());
+
+        // E. 綁定數據
+        container.setData({ 'shape': maskShape, 'lionImg': lionImg, 'poemText': poemText, 'target': { x: data.tx, y: data.ty }, 'home': { x: invX, y: invY }, 'isPlaced': false });
+        container.setInteractive(new Phaser.Geom.Circle(0, 0, 50), Phaser.Geom.Circle.Contains);
+        this.input.setDraggable(container);
         
-        // 比例修正邏輯
-        const aspectRatio = lionImg.width / lionImg.height;
-        if (lionImg.width > lionImg.height) {
-            lionImg.setDisplaySize(targetPieceSize * aspectRatio, targetPieceSize);
-        } else {
-            lionImg.setDisplaySize(targetPieceSize, targetPieceSize / aspectRatio);
-        }
-
-        // C. 建立專屬圓形遮罩
-        const shape = this.make.graphics();
-        shape.fillStyle(0xffffff);
-        shape.fillCircle(0, 0, targetPieceSize / 2);
-        shape.setPosition(startX, startY);
-        lionImg.setMask(shape.createGeometryMask());
-
-        // D. 綁定數據到物件，方便拖拽時抓取
-        lionImg.setData('shape', shape);
-        lionImg.setData('target', { x: data.tx, y: data.ty });
-        lionImg.setData('home', { x: startX, y: startY });
-
-        // E. 啟動互動
-        lionImg.setInteractive({ draggable: true, useHandCursor: true });
-        this.input.setDraggable(lionImg);
+        allPuzzles.push(container);
     });
 
-    // --- 3. UI 狀態與模式切換 ---
-    const statusText = this.add.text(10, 10, '模式：[B] 遊戲拖拽', { 
-        fontSize: '18px', color: '#00ff00', backgroundColor: '#000000aa', padding: {x:10, y:5}
-    });
-    const debugCoord = this.add.text(10, 45, '', { fontSize: '16px', color: '#ff0000' });
-
-    this.input.keyboard.on('keydown-A', () => {
-        currentMode = 'a';
-        statusText.setText('模式：[A] 座標偵測').setColor('#ff0000');
-    });
-    this.input.keyboard.on('keydown-B', () => {
-        currentMode = 'b';
-        statusText.setText('模式：[B] 遊戲拖拽').setColor('#00ff00');
+    // --- 4. 背包點擊邏輯 ---
+    bagBtn.on('pointerdown', () => {
+        const isOpen = !bagOverlay.visible;
+        bagOverlay.setVisible(isOpen);
+        allPuzzles.forEach(p => { if (!p.getData('isPlaced')) p.setVisible(isOpen); });
     });
 
-    // --- 4. 核心拖拽邏輯 ---
+    // --- 5. 拖拽核心邏輯 ---
+    this.input.on('dragstart', (pointer, gameObject) => {
+        bagOverlay.setVisible(false);
+        allPuzzles.forEach(p => { if (p !== gameObject && !p.getData('isPlaced')) p.setVisible(false); });
+        gameObject.setDepth(200);
+    });
+
     this.input.on('drag', (pointer, gameObject, dragX, dragY) => {
-        if (currentMode === 'b') {
-            gameObject.setPosition(dragX, dragY);
-            gameObject.getData('shape').setPosition(dragX, dragY);
+        gameObject.setPosition(dragX, dragY);
+        gameObject.getData('shape').setPosition(dragX, dragY);
+
+        const distToMag = Phaser.Math.Distance.Between(dragX, dragY, mag.x, mag.y);
+        const lionImg = gameObject.getData('lionImg');
+        const poemText = gameObject.getData('poemText');
+
+        if (distToMag < mag.detectDist) {
+            if (!gameObject.getData('isZoomed')) {
+                gameObject.setData('isZoomed', true);
+                self.tweens.killTweensOf([gameObject, gameObject.getData('shape')]);
+                self.tweens.add({ targets: [gameObject, gameObject.getData('shape')], scale: mag.zoomScale, duration: 180, ease: 'Back.out' });
+                lionImg.setTint(piece.zoomTint);
+                poemText.setAlpha(1);
+            }
+        } else if (gameObject.getData('isZoomed')) {
+            gameObject.setData('isZoomed', false);
+            self.tweens.killTweensOf([gameObject, gameObject.getData('shape')]);
+            self.tweens.add({ targets: [gameObject, gameObject.getData('shape')], scale: 1.0, duration: 180 });
+            lionImg.clearTint();
+            poemText.setAlpha(0);
         }
     });
 
     this.input.on('dragend', (pointer, gameObject) => {
-        if (currentMode === 'b') {
-            const target = gameObject.getData('target');
-            const home = gameObject.getData('home');
-            const dist = Phaser.Math.Distance.Between(gameObject.x, gameObject.y, target.x, target.y);
+        const target = gameObject.getData('target');
+        const home = gameObject.getData('home');
+        const maskShape = gameObject.getData('shape');
 
-            if (dist < 50) {
-                // 吸附
-                gameObject.setPosition(target.x, target.y);
-                gameObject.getData('shape').setPosition(target.x, target.y);
-                gameObject.disableInteractive();
-                // 暫不處理對錯，僅簡單變色示意
-                gameObject.setTint(0xffffff); 
-            } else {
-                // 彈回
-                self.tweens.add({
-                    targets: [gameObject, gameObject.getData('shape')],
-                    x: home.x, y: home.y,
-                    duration: 400, ease: 'Back.easeOut'
-                });
-            }
+        // 清除放大狀態
+        if (gameObject.getData('isZoomed')) {
+            gameObject.setData('isZoomed', false);
+            gameObject.setScale(1); maskShape.setScale(1);
+            gameObject.getData('lionImg').clearTint();
+            gameObject.getData('poemText').setAlpha(0);
+        }
+
+        const dist = Phaser.Math.Distance.Between(gameObject.x, gameObject.y, target.x, target.y);
+        if (dist < piece.snapDist) {
+            // 成功吸附
+            gameObject.setPosition(target.x, target.y).setData('isPlaced', true).setVisible(true).disableInteractive().setDepth(5);
+            maskShape.setPosition(target.x, target.y);
+        } else {
+            // 彈回背包
+            gameObject.setVisible(false);
+            self.tweens.add({ targets: [gameObject, maskShape], x: home.x, y: home.y, duration: 400 });
         }
     });
+}
 
-    // --- 5. 紅點偵測 (A 模式) ---
-    this.input.on('pointerdown', (pointer, gameObjects) => {
-        if (currentMode === 'a' && gameObjects.length === 0) {
-            debugCoord.setText(`座標 -> X: ${Math.floor(pointer.x)}, Y: ${Math.floor(pointer.y)}`);
-            this.add.circle(pointer.x, pointer.y, 5, 0xff0000);
-        }
-    });
+function drawSpecificShape(g, type, r) {
+    g.beginPath();
+    if (type === 'circle') g.arc(0, 0, r, 0, Math.PI * 2);
+    else if (type === 'hexagon') { for (let i = 0; i < 6; i++) { const a = (Math.PI / 3) * i; g.lineTo(Math.cos(a) * r, Math.sin(a) * r); } }
+    else if (type === 'rhombus') { g.moveTo(0, -r); g.lineTo(r, 0); g.lineTo(0, r); g.lineTo(-r, 0); }
+    else if (type === 'shield') { g.moveTo(-r, -r); g.lineTo(r, -r); g.lineTo(r, r * 0.4); g.lineTo(0, r); g.lineTo(-r, r * 0.4); }
+    else if (type === 'cloud') { g.arc(-r * 0.4, 0, r * 0.5, Math.PI * 0.5, Math.PI * 1.5); g.arc(0, -r * 0.4, r * 0.5, Math.PI, 0); g.arc(r * 0.4, 0, r * 0.5, Math.PI * 1.5, Math.PI * 0.5); g.arc(0, r * 0.4, r * 0.5, 0, Math.PI); }
+    g.closePath(); g.fillPath(); g.strokePath();
 }
 </script>
 </body>
