@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>金門風獅爺尋寶 V3.2 - 穩定整理版</title>
+    <title>金門風獅爺尋寶 V3.3 - 穩定整理版</title>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
     <style>
         body { margin: 0; background-color: #000; overflow: hidden; touch-action: none; }
@@ -17,9 +17,13 @@
 const GAME_SETTINGS = {
     width: 1024,
     height: 768,
-    mag: { x: 940, y: 650, size: 200, detectDist: 110, zoomScale: 2.0 },
+    mag: { 
+        x: 940, y: 650, size: 160, 
+        detectDist: 90, // 放大鏡感應範圍
+        bookImgMax: 260 // 古籍視窗圖片最大邊長
+    },
     bag: { x: 110, y: 660, size: 120, overlayAlpha: 0.7 },
-    piece: { size: 100, holeRadius: 45, snapDist: 60, zoomTint: 0x333333 },
+    piece: { size: 100, holeRadius: 45, snapDist: 80 },
     colors: { holeFill: 0xffff00, holeLine: 0xffffff, textBg: '#ffffffcc' }
 };
 
@@ -44,133 +48,218 @@ function preload() {
     this.load.image('ui_magnifier', 'magnifier.png');
     this.load.image('ui_bag', 'bag.png');
     lionsData.forEach(lion => this.load.image(lion.id, `${lion.id}.png`));
+    // 🎵 預留音效位址 (你可以先用自己的檔名，或先註解掉以免報錯)
+    // this.load.audio('sfx_snap', 'snap.mp3'); 
+    // this.load.audio('sfx_read', 'read.mp3');
 }
 
 function create() {
     const self = this;
     const { mag, bag, piece, colors } = GAME_SETTINGS;
     const allPuzzles = [];
+    // --- 打字機效果專用變數 ---
+    let currentPoemID = ""; // 紀錄目前正在讀哪一首詩，避免重複觸發
+    let typewriterTimer = null;
 
-    // --- 2. 背景與 UI 佈置 ---
-    const map = this.add.image(512, 384, 'bg_map');
-    map.setScale(Math.min(1024 / map.width, 768 / map.height)).setAlpha(0.6);
-
-    // 建立黑色遮罩 (層級 80)
+    // --- 2. 基礎層 (背景與遮罩) ---
+    const map = this.add.image(512, 384, 'bg_map').setAlpha(0.6);
+    map.setScale(Math.min(1024 / map.width, 768 / map.height));
     const bagOverlay = this.add.graphics().fillStyle(0x000000, bag.overlayAlpha).fillRect(0, 0, 1024, 768).setVisible(false).setDepth(80);
 
-    // 建立放大鏡
-    this.add.image(mag.x, mag.y, 'ui_magnifier').setDisplaySize(mag.size, mag.size).setAlpha(0.9);
-    this.add.text(mag.x, mag.y + 75, '檢視線索', { fontSize: '16px', color: '#fff', backgroundColor: '#00000088' }).setOrigin(0.5);
+    // --- 3. 建立古籍鑑定視窗 (預設隱藏) ---
+    const bookGroup = this.add.container(512, 384).setDepth(2000).setVisible(false);
+    const bookBg = this.add.graphics().fillStyle(0xf5deb3, 0.95).lineStyle(6, 0x8b4513, 1);
+    bookBg.fillRoundedRect(-320, -200, 640, 400, 20).strokeRoundedRect(-320, -200, 640, 400, 20);
+    bookBg.lineStyle(2, 0x8b4513, 0.3).lineBetween(0, -140, 0, 160);
 
-    // 建立包包按鈕 (層級 1000，確保永遠點得到)
-    const bagBtn = this.add.image(bag.x, bag.y, 'ui_bag').setInteractive({ useHandCursor: true }).setDepth(1000);
-    bagBtn.setScale(bag.size / bagBtn.width);
-    this.add.text(bag.x, bag.y + 65, '我的背包', { fontSize: '18px', color: '#fff', backgroundColor: '#00000088' }).setOrigin(0.5).setDepth(1000);
+    const bookTitle = this.add.text(0, -170, "— 風獅爺鑑定報告 —", { fontSize: '24px', color: '#4a2c2c', fontWeight: 'bold' }).setOrigin(0.5);
+    const bookImg = this.add.image(-160, 0, '').setOrigin(0.5); 
+    const bookPoem = this.add.text(160, 0, "", { 
+        fontSize: '28px', color: '#2b1d1d', align: 'center', lineSpacing: 15, fontStyle: 'bold', wordWrap: { width: 260 } 
+    }).setOrigin(0.5);
+    bookGroup.add([bookBg, bookTitle, bookImg, bookPoem]);
 
-    // --- 3. 一次性建立所有風獅爺 (地圖洞 + 拼圖) ---
+    // --- 4. 建立地圖空格與拼圖物件 ---
     lionsData.forEach((data, index) => {
-        // A. 地圖上的洞
-        const targetHole = this.add.graphics().setPosition(data.tx, data.ty);
+        const targetHole = this.add.graphics().setPosition(data.tx, data.ty).setDepth(10);
         targetHole.fillStyle(colors.holeFill, 0.2).lineStyle(2, colors.holeLine, 0.8);
         drawSpecificShape(targetHole, data.shapeType, piece.holeRadius);
         this.add.text(data.tx, data.ty + 65, data.name, { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
 
-        // B. 背包內的初始位置
         const invX = 300 + (index % 3) * 200;
         const invY = 300 + Math.floor(index / 3) * 200;
 
-        // C. 建立容器與內容物
         const lionImg = this.add.image(0, 0, data.id);
         const ratio = lionImg.width / lionImg.height;
         lionImg.setDisplaySize(piece.size * 1.4 * (ratio > 1 ? ratio : 1), piece.size * 1.4 * (ratio > 1 ? 1 : 1/ratio));
 
-        const poemText = this.add.text(0, 0, data.poem, {
-            fontSize: '18px', color: '#000', align: 'center', backgroundColor: colors.textBg,
-            padding: { x: 5, y: 5 }, wordWrap: { width: piece.size + 20 }
-        }).setOrigin(0.5).setAlpha(0);
-
         const container = this.add.container(invX, invY).setDepth(100).setVisible(false);
-        container.add([lionImg, poemText]);
+        container.add(lionImg);
 
-        // D. 建立遮罩
         const maskShape = this.make.graphics().fillStyle(0xffffff);
         drawSpecificShape(maskShape, data.shapeType, piece.size / 2);
         maskShape.setPosition(invX, invY);
         container.setMask(maskShape.createGeometryMask());
 
-        // E. 綁定數據
-        container.setData({ 'shape': maskShape, 'lionImg': lionImg, 'poemText': poemText, 'target': { x: data.tx, y: data.ty }, 'home': { x: invX, y: invY }, 'isPlaced': false });
+        container.setData({ 
+            'id': data.id, 'poem': data.poem, 'shape': maskShape, 
+            'target': { x: data.tx, y: data.ty }, 'home': { x: invX, y: invY }, 'isPlaced': false 
+        });
+        
         container.setInteractive(new Phaser.Geom.Circle(0, 0, 50), Phaser.Geom.Circle.Contains);
         this.input.setDraggable(container);
-        
         allPuzzles.push(container);
     });
 
-    // --- 4. 背包點擊邏輯 ---
+    // --- 5. 工具列建立 ---
+    const bagBtn = this.add.image(bag.x, bag.y, 'ui_bag').setInteractive({ useHandCursor: true }).setDepth(1000);
+    bagBtn.setScale(bag.size / bagBtn.width);
+    this.add.text(bag.x, bag.y + 65, '我的背包', { fontSize: '18px', color: '#fff', backgroundColor: '#00000088' }).setOrigin(0.5).setDepth(1000);
+
+    const magnifier = this.add.image(mag.x, mag.y, 'ui_magnifier').setDisplaySize(mag.size, mag.size).setInteractive({ draggable: true }).setDepth(1500).setOrigin(1, 1);
+    const magHint = this.add.text(mag.x - 40, mag.y + 10, '拖動觀察', { fontSize: '16px', color: '#fff', backgroundColor: '#00000088' }).setOrigin(0.5).setDepth(1500);
+
+    // --- 6. 互動核心邏輯 ---
+
+    // 背包功能
     bagBtn.on('pointerdown', () => {
         const isOpen = !bagOverlay.visible;
         bagOverlay.setVisible(isOpen);
         allPuzzles.forEach(p => { if (!p.getData('isPlaced')) p.setVisible(isOpen); });
     });
 
-    // --- 5. 拖拽核心邏輯 ---
+    // 放大鏡掃描功能 (新增打字機效果)
+    magnifier.on('drag', (pointer, dragX, dragY) => {
+        magnifier.setPosition(dragX, dragY);
+        magHint.setPosition(dragX - 40, dragY + 10);
+        
+        const lensX = dragX - (mag.size * 0.65);
+        const lensY = dragY - (mag.size * 0.65);
+
+        let isOverLion = false;
+        allPuzzles.forEach(p => {
+            if (p.getData('isPlaced')) {
+                const dist = Phaser.Math.Distance.Between(lensX, lensY, p.x, p.y);
+                if (dist < GAME_SETTINGS.mag.detectDist) {
+                    isOverLion = true;
+                    
+                    const pID = p.getData('id');
+                    const fullPoem = p.getData('poem');
+
+                    // 💡 如果照到的是新的風獅爺，才啟動打字機
+                    if (currentPoemID !== pID) {
+                        currentPoemID = pID;
+                        
+                        // 播放鑑定音效 (如果有載入的話)
+                        // if (this.sound.get('sfx_read')) this.sound.play('sfx_read');
+
+                        // 停止上一次的計時器
+                        if (typewriterTimer) typewriterTimer.remove();
+                        
+                        // 打字機初始化
+                        bookPoem.setText("");
+                        let charIndex = 0;
+                        typewriterTimer = this.time.addEvent({
+                            delay: 100, // 每 0.1 秒出一個字
+                            repeat: fullPoem.length - 1,
+                            callback: () => {
+                                bookPoem.setText(fullPoem.substr(0, charIndex + 1));
+                                charIndex++;
+                            }
+                        });
+                    }
+
+                    bookImg.setTexture(pID);
+                    const maxS = GAME_SETTINGS.mag.bookImgMax;
+                    const scale = Math.min(maxS / bookImg.width, maxS / bookImg.height);
+                    bookImg.setScale(scale); 
+                    
+                    bookGroup.setVisible(true);
+                    map.setAlpha(0.2);
+                }
+            }
+        });
+
+        if (!isOverLion) { 
+            bookGroup.setVisible(false); 
+            map.setAlpha(0.6); 
+            currentPoemID = ""; // 離開後重設，下次進來才能再觸發打字
+            if (typewriterTimer) typewriterTimer.remove();
+        }
+    });
+
+    // 全域拖拽處理
     this.input.on('dragstart', (pointer, gameObject) => {
+        if (gameObject === magnifier) return;
         bagOverlay.setVisible(false);
         allPuzzles.forEach(p => { if (p !== gameObject && !p.getData('isPlaced')) p.setVisible(false); });
         gameObject.setDepth(200);
     });
 
     this.input.on('drag', (pointer, gameObject, dragX, dragY) => {
+        if (gameObject === magnifier) return;
         gameObject.setPosition(dragX, dragY);
         gameObject.getData('shape').setPosition(dragX, dragY);
+    });
 
-        const distToMag = Phaser.Math.Distance.Between(dragX, dragY, mag.x, mag.y);
-        const lionImg = gameObject.getData('lionImg');
-        const poemText = gameObject.getData('poemText');
+    // 拼圖放手邏輯 (補回吸附功能)
+    this.input.on('dragend', (pointer, gameObject) => {
+        if (gameObject === magnifier) {
+            bookGroup.setVisible(false);
+            map.setAlpha(0.6);
+            return;
+        }
 
-        if (distToMag < mag.detectDist) {
-            if (!gameObject.getData('isZoomed')) {
-                gameObject.setData('isZoomed', true);
-                self.tweens.killTweensOf([gameObject, gameObject.getData('shape')]);
-                self.tweens.add({ targets: [gameObject, gameObject.getData('shape')], scale: mag.zoomScale, duration: 180, ease: 'Back.out' });
-                lionImg.setTint(piece.zoomTint);
-                poemText.setAlpha(1);
-            }
-        } else if (gameObject.getData('isZoomed')) {
-            gameObject.setData('isZoomed', false);
-            self.tweens.killTweensOf([gameObject, gameObject.getData('shape')]);
-            self.tweens.add({ targets: [gameObject, gameObject.getData('shape')], scale: 1.0, duration: 180 });
-            lionImg.clearTint();
-            poemText.setAlpha(0);
+        const target = gameObject.getData('target');
+        const home = gameObject.getData('home');
+        const dist = Phaser.Math.Distance.Between(gameObject.x, gameObject.y, target.x, target.y);
+
+        if (dist < piece.snapDist) {
+            // ... (原本的踢除舊拼圖邏輯維持不變) ...
+            allPuzzles.forEach(other => {
+                if (other !== gameObject && other.getData('isPlaced') && 
+                    other.getData('target').x === target.x && other.getData('target').y === target.y) {
+                    other.setData('isPlaced', false).setVisible(false);
+                    const otherHome = other.getData('home');
+                    other.setPosition(otherHome.x, otherHome.y);
+                    other.getData('shape').setPosition(otherHome.x, otherHome.y);
+                }
+            });
+
+            // 💡 成功吸附動畫 (Tween)
+            gameObject.setPosition(target.x, target.y).setData('isPlaced', true).setDepth(5).setVisible(true);
+            gameObject.getData('shape').setPosition(target.x, target.y);
+
+            // 播放吸附音效 (如果有載入的話)
+            // if (this.sound.get('sfx_snap')) this.sound.play('sfx_snap');
+
+            this.tweens.add({
+                targets: gameObject,
+                scale: 1.2,        // 放大到 1.2 倍
+                duration: 100,     // 0.1 秒變大
+                yoyo: true,        // 自動縮小回來
+                ease: 'Back.easeOut'
+            });
+
+        } else {
+            // ... (失敗彈回邏輯維持不變) ...
+            gameObject.setData('isPlaced', false).setVisible(false);
+            self.tweens.add({ targets: [gameObject, gameObject.getData('shape')], x: home.x, y: home.y, duration: 400 });
         }
     });
 
-    this.input.on('dragend', (pointer, gameObject) => {
-        const target = gameObject.getData('target');
-        const home = gameObject.getData('home');
-        const maskShape = gameObject.getData('shape');
-
-        // 清除放大狀態
-        if (gameObject.getData('isZoomed')) {
-            gameObject.setData('isZoomed', false);
-            gameObject.setScale(1); maskShape.setScale(1);
-            gameObject.getData('lionImg').clearTint();
-            gameObject.getData('poemText').setAlpha(0);
-        }
-
-        const dist = Phaser.Math.Distance.Between(gameObject.x, gameObject.y, target.x, target.y);
-        if (dist < piece.snapDist) {
-            // 成功吸附
-            gameObject.setPosition(target.x, target.y).setData('isPlaced', true).setVisible(true).disableInteractive().setDepth(5);
-            maskShape.setPosition(target.x, target.y);
-        } else {
-            // 彈回背包
-            gameObject.setVisible(false);
-            self.tweens.add({ targets: [gameObject, maskShape], x: home.x, y: home.y, duration: 400 });
+    // 點擊回彈功能
+    this.input.on('gameobjectdown', (pointer, gameObject) => {
+        if (gameObject !== magnifier && gameObject !== bagBtn && gameObject.getData('isPlaced')) {
+            const home = gameObject.getData('home');
+            gameObject.setData('isPlaced', false).setVisible(false);
+            gameObject.getData('shape').setPosition(home.x, home.y);
+            gameObject.setPosition(home.x, home.y);
         }
     });
 }
 
+// --- 7. 形狀繪製輔助函式 ---
 function drawSpecificShape(g, type, r) {
     g.beginPath();
     if (type === 'circle') g.arc(0, 0, r, 0, Math.PI * 2);
@@ -180,6 +269,7 @@ function drawSpecificShape(g, type, r) {
     else if (type === 'cloud') { g.arc(-r * 0.4, 0, r * 0.5, Math.PI * 0.5, Math.PI * 1.5); g.arc(0, -r * 0.4, r * 0.5, Math.PI, 0); g.arc(r * 0.4, 0, r * 0.5, Math.PI * 1.5, Math.PI * 0.5); g.arc(0, r * 0.4, r * 0.5, 0, Math.PI); }
     g.closePath(); g.fillPath(); g.strokePath();
 }
+
 </script>
 </body>
 </html>
