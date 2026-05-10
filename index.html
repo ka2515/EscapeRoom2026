@@ -18,11 +18,11 @@ const GAME_SETTINGS = {
     width: 1024,
     height: 768,
     mag: { 
-        x: 940, y: 650, size: 160, 
+        x: 1010, y: 680, size: 160, 
         detectDist: 90, // 放大鏡感應範圍
         bookImgMax: 260 // 古籍視窗圖片最大邊長
     },
-    bag: { x: 110, y: 660, size: 120, overlayAlpha: 0.7 },
+    bag: { x: 110, y: 620, size: 120, overlayAlpha: 0.7 },
     piece: { size: 100, holeRadius: 45, snapDist: 80 },
     colors: { holeFill: 0xffff00, holeLine: 0xffffff, textBg: '#ffffffcc' }
 };
@@ -57,6 +57,17 @@ function create() {
     const self = this;
     const { mag, bag, piece, colors } = GAME_SETTINGS;
     const allPuzzles = [];
+    const allHoles = [];
+    const allHoleGlows = []; // 💾 新增：用來存放所有流光物件的陣列
+
+    // 圓周流光設定 (Slow Motion)
+    const glowConfig = {
+        thickness: 4,      // 光圈厚度
+        color: 0x00ffff,   // 光圈顏色 (青色，與黃色空格區隔)
+        alpha: 0.8,        // 光圈透明度
+        duration: 3000,    // 旋轉一圈的時間 (3秒)
+    }
+
     // --- 打字機效果專用變數 ---
     let currentPoemID = ""; // 紀錄目前正在讀哪一首詩，避免重複觸發
     let typewriterTimer = null;
@@ -80,12 +91,68 @@ function create() {
     bookGroup.add([bookBg, bookTitle, bookImg, bookPoem]);
 
     // --- 4. 建立地圖空格與拼圖物件 ---
+    // --- 4. 建立地圖空格與拼圖物件 ---
     lionsData.forEach((data, index) => {
+        // A. 地圖上的洞
         const targetHole = this.add.graphics().setPosition(data.tx, data.ty).setDepth(10);
+        allHoles.push(targetHole);
         targetHole.fillStyle(colors.holeFill, 0.2).lineStyle(2, colors.holeLine, 0.8);
-        drawSpecificShape(targetHole, data.shapeType, piece.holeRadius);
-        this.add.text(data.tx, data.ty + 65, data.name, { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
+        drawSpecificShape(targetHole, 'circle', piece.holeRadius);
+        
+        // --- 圓周流光：V3.6.3 終極相容版 ---
+        const glowLine = this.add.graphics().setPosition(data.tx, data.ty).setDepth(11);
+        targetHole.setData('glow', { ring: glowLine });
 
+        // 建立一個控制進度的物件 (progress 從 0 到 1)
+        const glowControl = { progress: 0 };
+
+        this.tweens.add({
+            targets: glowControl,
+            progress: 1,            // 整個動畫生命週期從 0 變到 1
+            duration: 300,         // 總時長 (淡入+旋轉+淡出 共 0.3 秒)
+            repeat: -1,             // 無限循環
+            hold: 3000,             // 靜止 3 秒
+            delay: index * 700,     // 交錯啟動
+            onUpdate: () => {
+                glowLine.clear();
+                const p = glowControl.progress;
+                
+                // 計算透明度 (0~0.2 淡入, 0.8~1.0 淡出)
+                let alpha = 0;
+                if (p < 0.2) alpha = p / 0.2;
+                else if (p < 0.8) alpha = 1;
+                else alpha = (1 - p) / 0.2;
+
+                // 計算旋轉角度 (讓它在 1 秒內轉完 360 度)
+                const angle = p * 360;
+                const startRad = Phaser.Math.DegToRad(angle);
+                const endRad = Phaser.Math.DegToRad(angle + 45);
+                
+                if (alpha > 0) {
+                    // 底層暈光
+                    glowLine.lineStyle(10, 0xffa500, 0.3 * alpha);
+                    glowLine.beginPath();
+                    glowLine.arc(0, 0, piece.holeRadius, startRad, endRad);
+                    glowLine.strokePath();
+
+                    // 核心金光
+                    glowLine.lineStyle(5, 0xffd700, 1.0 * alpha);
+                    glowLine.beginPath();
+                    glowLine.arc(0, 0, piece.holeRadius, startRad, endRad);
+                    glowLine.strokePath();
+                }
+            },
+            onRepeat: () => {
+                glowLine.clear(); // 每次重複前徹底清空
+            }
+        });
+        
+
+
+
+
+
+        // C. 拼圖物件與容器建立 (原本的部分，繼續銜接)
         const invX = 300 + (index % 3) * 200;
         const invY = 300 + Math.floor(index / 3) * 200;
 
@@ -97,7 +164,7 @@ function create() {
         container.add(lionImg);
 
         const maskShape = this.make.graphics().fillStyle(0xffffff);
-        drawSpecificShape(maskShape, data.shapeType, piece.size / 2);
+        drawSpecificShape(maskShape, 'circle', piece.size / 2); // 強制包包內顯示都是圓形
         maskShape.setPosition(invX, invY);
         container.setMask(maskShape.createGeometryMask());
 
@@ -113,8 +180,12 @@ function create() {
 
     // --- 5. 工具列建立 ---
     const bagBtn = this.add.image(bag.x, bag.y, 'ui_bag').setInteractive({ useHandCursor: true }).setDepth(1000);
-    bagBtn.setScale(bag.size / bagBtn.width);
-    this.add.text(bag.x, bag.y + 65, '我的背包', { fontSize: '18px', color: '#fff', backgroundColor: '#00000088' }).setOrigin(0.5).setDepth(1000);
+    bagBtn.setScale((bag.size / bagBtn.width) * 2); // 放大 2 倍
+    this.add.text(bag.x, bag.y + 60, '我的背包', {
+        fontSize: '20px', 
+        color: '#fff', 
+        backgroundColor: '#00000088' 
+    }).setOrigin(0.5).setDepth(1000);
 
     const magnifier = this.add.image(mag.x, mag.y, 'ui_magnifier').setDisplaySize(mag.size, mag.size).setInteractive({ draggable: true }).setDepth(1500).setOrigin(1, 1);
     const magHint = this.add.text(mag.x - 40, mag.y + 10, '拖動觀察', { fontSize: '16px', color: '#fff', backgroundColor: '#00000088' }).setOrigin(0.5).setDepth(1500);
@@ -130,11 +201,18 @@ function create() {
 
     // 放大鏡掃描功能 (新增打字機效果)
     magnifier.on('drag', (pointer, dragX, dragY) => {
+
+        // 💡 加入邊界限制 (Clamp)，確保放大鏡不會飛出 1024x768 的範圍
+        const safeX = Phaser.Math.Clamp(dragX, 100, 1010);
+        const safeY = Phaser.Math.Clamp(dragY, 100, 750);
+        magnifier.setPosition(safeX, safeY);
+        magHint.setPosition(safeX - 40, safeY + 10);
+        // 鏡頭偵測點也要跟著 safeX, safeY
+        const lensX = safeX - (mag.size * 0.65);
+        const lensY = safeY - (mag.size * 0.65);
+
         magnifier.setPosition(dragX, dragY);
         magHint.setPosition(dragX - 40, dragY + 10);
-        
-        const lensX = dragX - (mag.size * 0.65);
-        const lensY = dragY - (mag.size * 0.65);
 
         let isOverLion = false;
         allPuzzles.forEach(p => {
@@ -202,7 +280,7 @@ function create() {
         gameObject.getData('shape').setPosition(dragX, dragY);
     });
 
-    // 拼圖放手邏輯 (補回吸附功能)
+    // 拼圖放手邏輯
     this.input.on('dragend', (pointer, gameObject) => {
         if (gameObject === magnifier) {
             bookGroup.setVisible(false);
@@ -215,48 +293,95 @@ function create() {
         const dist = Phaser.Math.Distance.Between(gameObject.x, gameObject.y, target.x, target.y);
 
         if (dist < piece.snapDist) {
-            // ... (原本的踢除舊拼圖邏輯維持不變) ...
+            // 1. 踢除舊拼圖邏輯
             allPuzzles.forEach(other => {
                 if (other !== gameObject && other.getData('isPlaced') && 
                     other.getData('target').x === target.x && other.getData('target').y === target.y) {
-                    other.setData('isPlaced', false).setVisible(false);
-                    const otherHome = other.getData('home');
-                    other.setPosition(otherHome.x, otherHome.y);
-                    other.getData('shape').setPosition(otherHome.x, otherHome.y);
+                        // --- 💡 這裡呼叫：舊的被踢走了，流光要回來 ---
+                        toggleHoleGlow(target.x, target.y, true);
+                        other.setData('isPlaced', false).setVisible(false);
+                        const otherHome = other.getData('home');
+                        other.setPosition(otherHome.x, otherHome.y);
+                        other.getData('shape').setPosition(otherHome.x, otherHome.y);
                 }
             });
 
-            // 💡 成功吸附動畫 (Tween)
+            // 2. 執行吸附與跳動動畫
             gameObject.setPosition(target.x, target.y).setData('isPlaced', true).setDepth(5).setVisible(true);
             gameObject.getData('shape').setPosition(target.x, target.y);
 
-            // 播放吸附音效 (如果有載入的話)
-            // if (this.sound.get('sfx_snap')) this.sound.play('sfx_snap');
-
             this.tweens.add({
                 targets: gameObject,
-                scale: 1.2,        // 放大到 1.2 倍
-                duration: 100,     // 0.1 秒變大
-                yoyo: true,        // 自動縮小回來
-                ease: 'Back.easeOut'
+                scale: 1.2, yoyo: true, duration: 100, ease: 'Back.easeOut'
+            });
+
+            // 新的拼圖蓋上去了，流光執行淡出並隱藏
+            toggleHoleGlow(target.x, target.y, false);
+
+            // 💡 尋找對應的「洞」並關閉流光
+            allHoles.forEach(hole => {
+                if (hole.x === target.x && hole.y === target.y) {
+                    const glowData = hole.getData('glow');
+                    if (glowData && glowData.ring) {
+                        // 改為淡出但不銷毀
+                        this.tweens.add({
+                            targets: glowData.ring,
+                            alpha: 0,
+                            duration: 300,
+                            onComplete: () => { glowData.ring.setVisible(false); }
+                        });
+                    }
+                }
             });
 
         } else {
-            // ... (失敗彈回邏輯維持不變) ...
+            // 失敗回彈
             gameObject.setData('isPlaced', false).setVisible(false);
-            self.tweens.add({ targets: [gameObject, gameObject.getData('shape')], x: home.x, y: home.y, duration: 400 });
+            self.tweens.add({
+                targets: [gameObject, gameObject.getData('shape')],
+                x: home.x, y: home.y,
+                duration: 400
+            });
         }
     });
 
-    // 點擊回彈功能
+    // 點擊回彈功能 (當拼圖在地圖上被點擊時，送回包包)
     this.input.on('gameobjectdown', (pointer, gameObject) => {
+        // 排除放大鏡和背包按鈕，且只針對「已放置」的拼圖
         if (gameObject !== magnifier && gameObject !== bagBtn && gameObject.getData('isPlaced')) {
+            // 💡 1. 先抓出這尊風獅爺現在待的洞口座標
+            const targetPos = gameObject.getData('target'); 
+            // 💡 2. 呼叫流光重現：告訴系統這個座標的拼圖拿走了，光環可以回來了
+            toggleHoleGlow(targetPos.x, targetPos.y, true);
+            // 3. 執行原本的歸位邏輯
             const home = gameObject.getData('home');
             gameObject.setData('isPlaced', false).setVisible(false);
+            // 將遮罩形狀與拼圖本體都移回包包的家
             gameObject.getData('shape').setPosition(home.x, home.y);
             gameObject.setPosition(home.x, home.y);
         }
     });
+
+    // 根據座標讓流光重新出現
+    const toggleHoleGlow = (tx, ty, isVisible) => {
+        const hole = allHoles.find(h => h.x === tx && h.y === ty);
+        if (hole) {
+            const glowData = hole.getData('glow');
+            if (glowData && glowData.ring) {
+                if (isVisible) {
+                    glowData.ring.setVisible(true);
+                    this.tweens.add({ targets: glowData.ring, alpha: 1, duration: 500 });
+                } else {
+                    this.tweens.add({
+                        targets: glowData.ring,
+                        alpha: 0,
+                        duration: 300,
+                        onComplete: () => glowData.ring.setVisible(false)
+                    });
+                }
+            }
+        }
+    };
 }
 
 // --- 7. 形狀繪製輔助函式 ---
@@ -267,6 +392,14 @@ function drawSpecificShape(g, type, r) {
     else if (type === 'rhombus') { g.moveTo(0, -r); g.lineTo(r, 0); g.lineTo(0, r); g.lineTo(-r, 0); }
     else if (type === 'shield') { g.moveTo(-r, -r); g.lineTo(r, -r); g.lineTo(r, r * 0.4); g.lineTo(0, r); g.lineTo(-r, r * 0.4); }
     else if (type === 'cloud') { g.arc(-r * 0.4, 0, r * 0.5, Math.PI * 0.5, Math.PI * 1.5); g.arc(0, -r * 0.4, r * 0.5, Math.PI, 0); g.arc(r * 0.4, 0, r * 0.5, Math.PI * 1.5, Math.PI * 0.5); g.arc(0, r * 0.4, r * 0.5, 0, Math.PI); }
+    // 💡 新增：扇形支援 (用於製作流光遮罩)
+    else if (type === 'arc') {
+        // g.arc(x, y, r, startAngle, endAngle, anticlockwise)
+        // 此處畫一個 30 度的扇形 (從 0 到 30度)
+        g.moveTo(0, 0); // 回到圓心
+        g.arc(0, 0, r, 0, Phaser.Math.DegToRad(30)); // 畫 30 度
+        g.lineTo(0, 0); // 連回圓心
+    }
     g.closePath(); g.fillPath(); g.strokePath();
 }
 
