@@ -44,17 +44,43 @@ const config = {
 const game = new Phaser.Game(config);
 
 function preload() {
-    this.load.image('bg_map', 'map.png');
-    this.load.image('ui_magnifier', 'magnifier.png');
-    this.load.image('ui_bag', 'bag.png');
-    lionsData.forEach(lion => this.load.image(lion.id, `${lion.id}.png`));
-    // 🎵 預留音效位址 (你可以先用自己的檔名，或先註解掉以免報錯)
-    // this.load.audio('sfx_snap', 'snap.mp3'); 
-    // this.load.audio('sfx_read', 'read.mp3');
+    // 圖片路徑 assets/images/
+    const imgPath = 'assets/images/';
+    this.load.image('bg_map', imgPath + 'map.png');
+    this.load.image('ui_magnifier', imgPath + 'magnifier.png');
+    this.load.image('ui_bag', imgPath + 'bag.png');
+    lionsData.forEach(lion => this.load.image(lion.id, imgPath + `${lion.id}.png`));
+
+    // 音效 assets/audio/
+    const audioPath = 'assets/audio/';
+    this.load.audio('bgm_main', audioPath + 'bgm_main.mp3');
+    this.load.audio('sfx_snap', audioPath + 'sfx_snap.mp3');
+    this.load.audio('sfx_read', audioPath + 'sfx_read.mp3');
 }
 
 function create() {
     const self = this;
+
+    // --- 🎵 背景音樂初始化 ---
+    // 加上 volume 控制，避免太吵；loop 設為 true 循環播放
+    const bgm = this.sound.add('bgm_main', { volume: 0.4, loop: true });
+    // 讓遊戲在視窗失去焦點時繼續運行（音樂不會斷）
+    this.sound.pauseOnBlur = false;
+    
+    // 💡 處理瀏覽器自動播放限制
+    // 只要玩家點擊畫面任何地方，音樂就會開始
+    this.input.once('pointerdown', () => {
+        // 💡 關鍵：強制恢復音訊上下文 (解決部分瀏覽器靜音鎖定)
+        if (this.sound.context.state === 'suspended') {
+            this.sound.context.resume();
+        }
+
+        // 啟動背景音樂
+        if (bgm && !bgm.isPlaying) {
+            bgm.play({ loop: true, volume: 0.4 });
+        }
+    });
+
     const { mag, bag, piece, colors } = GAME_SETTINGS;
     const allPuzzles = [];
     const allHoles = [];
@@ -90,7 +116,6 @@ function create() {
     }).setOrigin(0.5);
     bookGroup.add([bookBg, bookTitle, bookImg, bookPoem]);
 
-    // --- 4. 建立地圖空格與拼圖物件 ---
     // --- 4. 建立地圖空格與拼圖物件 ---
     lionsData.forEach((data, index) => {
         // A. 地圖上的洞
@@ -207,6 +232,7 @@ function create() {
         const safeY = Phaser.Math.Clamp(dragY, 100, 750);
         magnifier.setPosition(safeX, safeY);
         magHint.setPosition(safeX - 40, safeY + 10);
+
         // 鏡頭偵測點也要跟著 safeX, safeY
         const lensX = safeX - (mag.size * 0.65);
         const lensY = safeY - (mag.size * 0.65);
@@ -228,8 +254,12 @@ function create() {
                     if (currentPoemID !== pID) {
                         currentPoemID = pID;
                         
-                        // 播放鑑定音效 (如果有載入的話)
-                        // if (this.sound.get('sfx_read')) this.sound.play('sfx_read');
+                        // 播放鑑定音效
+                        if (this.sound.get('sfx_snap')) {
+                            this.sound.play('sfx_snap', { volume: 0.8 }); // 稍微調大聲一點
+                        } else {
+                            console.error("找不到音效檔 sfx_snap");
+                        }
 
                         // 停止上一次的計時器
                         if (typewriterTimer) typewriterTimer.remove();
